@@ -8,4 +8,10 @@ tiktoken==0.13.0
 python-dotenv==1.0.1
 requests==2.32.3
 httpx==0.28.1
-pydantic==2.10.4
+# pydantic itself is NOT pinned - it's only a transitive dependency here
+# (fastapi + google-genai both need it, nothing in this codebase imports
+# it directly), and pinning it to a fixed version caused a real
+# ResolutionImpossible conflict on a fresh install: fastapi==0.115.6 and
+# google-genai==2.17.0 each declare their own compatible pydantic range,
+# and a hardcoded ==2.10.4 wasn't in both. Letting pip resolve it lets
+# it pick a version that actually satisfies both.
