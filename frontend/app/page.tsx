@@ -64,6 +64,19 @@ export default function Home() {
   );
   const [turns, setTurns] = useState<Turn[]>([]);
   const [micError, setMicError] = useState<string | null>(null);
+  // False until React has actually attached event handlers to the DOM.
+  // This page imports onnxruntime-web/vad-web, which is heavy enough that
+  // hydration visibly lags behind the SSR'd markup being on screen - a
+  // click during that gap lands on an inert node with no handler yet and
+  // is silently swallowed, no error, no feedback. Confirmed for real more
+  // than once: someone refreshes, clicks the mic immediately, and nothing
+  // happens at all (looks exactly like "the interrupt didn't work" when
+  // actually no click was ever registered). Disabling the button until
+  // this flips true turns a silent trap into an honest "not ready yet."
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
 
   const socketRef = useRef<SaathiSocket | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -452,7 +465,7 @@ export default function Home() {
 
       {/* Mic control — the one primary action on this screen */}
       <section className="flex flex-col items-center gap-3 border-t border-zinc-900 px-4 py-8">
-        <MicButton state={micState} onClick={handleMicClick} disabled={connectionStatus !== "connected"} />
+        <MicButton state={micState} onClick={handleMicClick} disabled={!hydrated || connectionStatus !== "connected"} />
         <StatusLine state={micState} />
         {micError && <p className="font-devanagari text-xs text-red-400">{micError}</p>}
         {connectionStatus !== "connected" && !micError && (
