@@ -45,13 +45,15 @@ async def transcribe(audio_bytes: bytes, mime_type: str = "audio/webm") -> str:
     if _client is None:
         raise RuntimeError("GEMINI_API_KEY must be set in backend/.env")
 
-    # Retries specifically a plain 400 INVALID_ARGUMENT once - observed for
-    # real, repeatedly, on otherwise-valid audio of varying sizes (18KB to
-    # 188KB, no pattern), with every other identical request succeeding.
-    # Looks like an intermittent flake in Gemini's audio ingestion, not a
-    # problem with our request - the SDK's own built-in retry (tenacity,
-    # visible in the traceback) only covers retryable statuses like
-    # 429/503, not a plain 400, so this slips through untouched otherwise.
+    # Retries a plain 400 INVALID_ARGUMENT or 500 INTERNAL once - both
+    # observed for real, repeatedly, on otherwise-valid audio of varying
+    # sizes (under 10KB up to 188KB, no pattern), with every other
+    # identical request succeeding. Looks like an intermittent flake in
+    # Gemini's audio ingestion, not a problem with our request - the SDK's
+    # own built-in retry (tenacity, visible in the traceback) only covers
+    # a narrower set of retryable statuses, not these, so they slip
+    # through untouched otherwise.
+    RETRYABLE_CODES = {400, 500}
     last_error: Exception | None = None
     for attempt in range(2):
         try:
@@ -65,10 +67,11 @@ async def transcribe(audio_bytes: bytes, mime_type: str = "audio/webm") -> str:
                 config={"max_output_tokens": 1024},
             )
             return response.text
-        except errors.ClientError as e:
+        except (errors.ClientError, errors.ServerError) as e:
             last_error = e
-            if getattr(e, "code", None) == 400 and attempt == 0:
-                logger.warning("state: STT got a 400, retrying once")
+            code = getattr(e, "code", None)
+            if code in RETRYABLE_CODES and attempt == 0:
+                logger.warning(f"state: STT got a {code}, retrying once")
                 await asyncio.sleep(0.5)
                 continue
             raise
