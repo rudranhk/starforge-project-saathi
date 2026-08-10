@@ -21,14 +21,16 @@ once available.
 - LLM: Google Gemini (`gemini-3.6-flash`) — see note below
 - TTS: Rime Arcana (`modelId="arcana"`, `lang="hin"`)
 - Vector DB: Qdrant Cloud (free tier)
-- Embeddings: OpenAI `text-embedding-3-small` (1536 dim)
+- Embeddings: Google Gemini (`gemini-embedding-001`, 1536 dim) — see note below
 - Browser VAD: `@ricky0123/vad-web`
 
 > **Stack deviation note:** the original plan used Anthropic claude-sonnet-5
-> for the LLM and Groq whisper-large-v3 for STT. Anthropic billing had no
-> usable credit and Groq's signup flow was persistently broken during the
-> build window, so both were swapped to Google Gemini (free tier, no card
-> required) to keep the hackathon on schedule. Full details in
-> `docs/DEMO.md` → Known limitations (Phase 8).
+> for the LLM, Groq whisper-large-v3 for STT, and OpenAI text-embedding-3-small
+> for embeddings. Anthropic billing had no usable credit, Groq's signup flow
+> was persistently broken during the build window, and we wanted the whole
+> pipeline to run on genuinely free services — so all three were consolidated
+> onto Google Gemini (free tier, no card required) to keep the hackathon on
+> schedule at zero cost. Full details in `docs/DEMO.md` → Known limitations
+> (Phase 8).
 
 Full architecture diagram, setup steps, and demo instructions land in Phase 8.
