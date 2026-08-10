@@ -19,6 +19,7 @@
 import asyncio
 import json
 import logging
+import os
 from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -34,9 +35,14 @@ logger = logging.getLogger("saathi")
 
 app = FastAPI()
 
+# Only matters for the plain HTTP /health route — Starlette's CORSMiddleware
+# passes the "websocket" scope straight through untouched, so it never
+# actually gates /ws regardless of this list. Still made env-driven so a
+# deployed frontend origin can be added without a code change.
+_allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

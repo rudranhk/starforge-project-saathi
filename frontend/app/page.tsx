@@ -32,9 +32,11 @@ function safeDestroyVad(vad: MicVAD): void {
   });
 }
 
-// Hardcoded for the hackathon demo — backend always runs on 8000, frontend
-// on 3000 (matches main.py's CORS allowlist).
-const WS_URL = "ws://localhost:8000/ws";
+// Local dev: backend always runs on 8000, frontend on 3000. Deployed: set
+// NEXT_PUBLIC_WS_URL (e.g. wss://saathi-error404.onrender.com/ws) in
+// Vercel's project env vars — falls back to localhost when unset so local
+// dev needs no .env.local at all.
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws";
 
 // Must match PCM_SAMPLE_RATE in backend/pipeline/tts.py — both sides have
 // to agree on the sample rate for playback to run at the right pitch/speed.

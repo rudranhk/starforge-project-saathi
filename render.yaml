@@ -1,0 +1,28 @@
+# Render Blueprint — deploys backend/main.py as a long-lived web service
+# (needed for the WebSocket connection; Vercel's serverless functions can't
+# hold one open). Deploy: render.com -> New -> Blueprint -> pick this repo.
+# Render detects this file automatically and asks for the four secret env
+# vars below (marked sync: false) rather than storing them in git.
+#
+# The service needs no local files (no policy.pdf, no ingest.py run) — the
+# policy is already embedded in Qdrant Cloud, which this just connects to
+# over the network via QDRANT_URL/QDRANT_API_KEY.
+services:
+  - type: web
+    name: saathi-error404
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: RIME_API_KEY
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: "*"
