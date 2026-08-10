@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #09090b; /* zinc-950 */
+  --foreground: #fafafa; /* zinc-50 */
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+}
+
+/* Thin, dark-friendly scrollbar for the transcript feed — a default
+   scrollbar reads as unfinished against a custom dark UI. */
+.transcript-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.transcript-scroll::-webkit-scrollbar-thumb {
+  background-color: rgb(82 82 91 / 0.6); /* zinc-600/60 */
+  border-radius: 9999px;
+}
+.transcript-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}

@@ -62,9 +62,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         a cancellable background task so an interrupt can cut it off at
         whichever await point it's currently at."""
         try:
+            await websocket.send_text(json.dumps({"type": "state", "value": "thinking"}))
+
             logger.info("state: transcribing")
             user_text = await transcribe(audio_bytes)
             logger.info(f"state: transcribed -> {user_text!r}")
+            # The client has no other way to know what the user's speech was
+            # recognized as — needed for the live transcript UI.
+            await websocket.send_text(json.dumps({"type": "user_transcript", "text": user_text}))
 
             logger.info("state: retrieving policy context")
             chunks = await retrieve(user_text, k=5)
@@ -76,7 +81,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             history.append({"role": "user", "content": user_text})
             history.append({"role": "assistant", "content": response_text})
 
+            # Same gap: the client only ever saw raw audio bytes for Saathi's
+            # reply, never the text — and never which policy page grounded
+            # it. Both are needed for the transcript + citation chip UI.
+            citation_page = chunks[0]["page_num"] if chunks else None
+            await websocket.send_text(
+                json.dumps({"type": "assistant_text", "text": response_text, "citation_page": citation_page})
+            )
+
             logger.info("state: synthesizing (streaming to client)")
+            await websocket.send_text(json.dumps({"type": "state", "value": "speaking"}))
             async for chunk in synthesize(response_text):
                 await websocket.send_bytes(chunk)
 
@@ -84,6 +98,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             # there's no way to distinguish "done speaking" from "still
             # loading" on the receiving end.
             await websocket.send_text(json.dumps({"type": "response_complete"}))
+            await websocket.send_text(json.dumps({"type": "state", "value": "idle"}))
             logger.info("state: finished speaking")
 
         except asyncio.CancelledError:
@@ -129,6 +144,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         pipeline_task.cancel()
                         logger.info("state: in-flight pipeline task cancelled")
                     audio_buffer.clear()
+                    await websocket.send_text(json.dumps({"type": "state", "value": "idle"}))
 
                 else:
                     logger.warning(f"state: unknown control message type {msg_type!r}")
