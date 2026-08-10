@@ -57,19 +57,55 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     history: list[dict] = []
     pipeline_task: Optional[asyncio.Task] = None
 
-    async def run_pipeline(audio_bytes: bytes) -> None:
+    # Every send on this connection goes through this lock + shield combo.
+    # Why both are needed, not just one:
+    #   - shield alone: protects one send from being torn down mid-write
+    #     when its own task is cancelled, but the protected send becomes a
+    #     detached background operation — nothing stops a DIFFERENT sender
+    #     (e.g. the interrupt handler) from starting a concurrent send
+    #     while that detached write is still finishing.
+    #   - lock alone: serializes sends against each other, but a
+    #     cancellation landing mid-write still tears down that write
+    #     (and the lock releases via the `async with`'s cleanup regardless).
+    #   - lock + shield together: shielding the *entire* "acquire lock,
+    #     send, release lock" unit means a cancelled task's in-flight send
+    #     keeps running to completion in the background, still holding the
+    #     lock — so anything else that wants to send simply blocks on the
+    #     lock until that write actually finishes, instead of racing it.
+    # Without this, a cancel arriving mid-send_bytes() could corrupt a
+    # WebSocket frame, which the browser's client then treats as a
+    # protocol violation and silently closes the whole connection —
+    # observed as: every interrupt worked once, then no second turn could
+    # ever complete.
+    send_lock = asyncio.Lock()
+
+    async def _locked_send_text(payload: dict) -> None:
+        async with send_lock:
+            await websocket.send_text(json.dumps(payload))
+
+    async def _locked_send_bytes(chunk: bytes) -> None:
+        async with send_lock:
+            await websocket.send_bytes(chunk)
+
+    async def send_text_shielded(payload: dict) -> None:
+        await asyncio.shield(_locked_send_text(payload))
+
+    async def send_bytes_shielded(chunk: bytes) -> None:
+        await asyncio.shield(_locked_send_bytes(chunk))
+
+    async def run_pipeline(audio_bytes: bytes, mime_type: str) -> None:
         """STT -> retrieve -> generate -> stream synthesize() back. Runs as
         a cancellable background task so an interrupt can cut it off at
         whichever await point it's currently at."""
         try:
-            await websocket.send_text(json.dumps({"type": "state", "value": "thinking"}))
+            await send_text_shielded({"type": "state", "value": "thinking"})
 
-            logger.info("state: transcribing")
-            user_text = await transcribe(audio_bytes)
+            logger.info(f"state: transcribing ({mime_type})")
+            user_text = await transcribe(audio_bytes, mime_type=mime_type)
             logger.info(f"state: transcribed -> {user_text!r}")
             # The client has no other way to know what the user's speech was
             # recognized as — needed for the live transcript UI.
-            await websocket.send_text(json.dumps({"type": "user_transcript", "text": user_text}))
+            await send_text_shielded({"type": "user_transcript", "text": user_text})
 
             logger.info("state: retrieving policy context")
             chunks = await retrieve(user_text, k=5)
@@ -85,20 +121,20 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             # reply, never the text — and never which policy page grounded
             # it. Both are needed for the transcript + citation chip UI.
             citation_page = chunks[0]["page_num"] if chunks else None
-            await websocket.send_text(
-                json.dumps({"type": "assistant_text", "text": response_text, "citation_page": citation_page})
+            await send_text_shielded(
+                {"type": "assistant_text", "text": response_text, "citation_page": citation_page}
             )
 
             logger.info("state: synthesizing (streaming to client)")
-            await websocket.send_text(json.dumps({"type": "state", "value": "speaking"}))
+            await send_text_shielded({"type": "state", "value": "speaking"})
             async for chunk in synthesize(response_text):
-                await websocket.send_bytes(chunk)
+                await send_bytes_shielded(chunk)
 
             # Tell the client the response finished streaming — without this
             # there's no way to distinguish "done speaking" from "still
             # loading" on the receiving end.
-            await websocket.send_text(json.dumps({"type": "response_complete"}))
-            await websocket.send_text(json.dumps({"type": "state", "value": "idle"}))
+            await send_text_shielded({"type": "response_complete"})
+            await send_text_shielded({"type": "state", "value": "idle"})
             logger.info("state: finished speaking")
 
         except asyncio.CancelledError:
@@ -131,17 +167,41 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     logger.info(f"state: end_utterance ({len(audio_buffer)} bytes buffered)")
                     utterance_bytes = bytes(audio_buffer)
                     audio_buffer.clear()
+                    # Manual push-to-talk sends webm/opus (MediaRecorder);
+                    # VAD-captured barge-in audio (Phase 7) sends WAV instead
+                    # (see lib/audio.ts) — the client says which.
+                    mime_type = control.get("mime_type", "audio/webm")
 
                     if pipeline_task is not None and not pipeline_task.done():
                         logger.info("state: cancelling previous in-flight task before starting new one")
                         pipeline_task.cancel()
+                        # Same reasoning as the interrupt handler below —
+                        # let the old task fully unwind before its replacement
+                        # starts sending on the same socket.
+                        try:
+                            await pipeline_task
+                        except asyncio.CancelledError:
+                            pass
 
-                    pipeline_task = asyncio.create_task(run_pipeline(utterance_bytes))
+                    pipeline_task = asyncio.create_task(run_pipeline(utterance_bytes, mime_type))
 
                 elif msg_type == "interrupt":
                     logger.info("state: interrupt received")
                     if pipeline_task is not None and not pipeline_task.done():
                         pipeline_task.cancel()
+                        # Actually wait for the task to finish unwinding
+                        # before sending anything else on this socket.
+                        # Without this, the cancelled task can still be
+                        # mid-way through its own websocket.send_bytes()
+                        # call when the send_text() below fires — two
+                        # concurrent sends on the same connection race and
+                        # can corrupt its state, killing the connection
+                        # entirely (observed: silent disconnect right after
+                        # an interrupt, no second turn ever completing).
+                        try:
+                            await pipeline_task
+                        except asyncio.CancelledError:
+                            pass
                         logger.info("state: in-flight pipeline task cancelled")
                     audio_buffer.clear()
                     await websocket.send_text(json.dumps({"type": "state", "value": "idle"}))

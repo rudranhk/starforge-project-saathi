@@ -8,7 +8,12 @@ export type ServerMessage =
   | { type: "assistant_text"; text: string; citation_page: number | null }
   | { type: "response_complete" };
 
-export type ControlMessage = { type: "end_utterance" } | { type: "interrupt" };
+export type ControlMessage =
+  // mime_type defaults to "audio/webm" server-side (the manual push-to-talk
+  // path via MediaRecorder) — VAD-captured audio (Phase 7 barge-in) is raw
+  // PCM encoded as WAV instead, so that path must say so explicitly.
+  | { type: "end_utterance"; mime_type?: "audio/webm" | "audio/wav" }
+  | { type: "interrupt" };
 
 type ConnectionStatus = "disconnected" | "connecting" | "connected";
 
