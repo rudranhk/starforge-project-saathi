@@ -55,7 +55,7 @@ flowchart TB
     subgraph Browser["Browser (Next.js 14)"]
         Mic["MediaRecorder<br/>(push-to-talk capture)"]
         VAD["@ricky0123/vad-web<br/>(barge-in detection while Saathi speaks)"]
-        Player["Web Audio API<br/>(buffered playback)"]
+        Player["Web Audio API<br/>(progressive PCM playback)"]
         UI["Transcript UI<br/>(bubbles + citation chip)"]
     end
 
@@ -74,7 +74,7 @@ flowchart TB
     Mic -- "binary audio chunks +\nend_utterance / interrupt" --> WS
     VAD -- "onSpeechStart: interrupt\nonSpeechEnd: new utterance (WAV)" --> WS
     WS -- "state / transcript /\ncitation JSON" --> UI
-    WS -- "streamed MP3 chunks" --> Player
+    WS -- "streamed raw PCM chunks" --> Player
 
     WS --> STT --> RET --> LLM --> TTS --> WS
     RET <--> Qdrant
@@ -171,11 +171,19 @@ Being direct about these rather than letting a judge discover them mid-demo:
   intentionally left unspent for the demo recording rather than burned on
   a repeat test) — the isolated measurement is strong evidence, not a full
   substitute for an in-app confirmation.
-- **Audio playback is buffered, not truly progressive.** The frontend
-  waits for a complete response to finish streaming before decoding and
-  playing it (`decodeAudioData` needs complete audio data to be reliable
-  across browsers) — this adds a few seconds of perceived latency on top
-  of an already multi-second STT→retrieval→generation pipeline.
+- **Audio playback is now truly progressive, with one caveat.** TTS
+  switched from MP3 (`decodeAudioData`, which needs the complete file) to
+  raw PCM (`Accept: audio/L16`) specifically so the frontend can convert
+  and schedule each chunk the moment it arrives via the Web Audio API,
+  instead of waiting for the whole response to finish streaming — this
+  removes several seconds of pure wait time from every response. Verified
+  with a Playwright test against a mock server replaying real Rime audio
+  (avoiding spending Gemini quota): `AudioBufferSourceNode.start()` calls
+  were observed spread continuously across the chunk-arrival window rather
+  than bunched at the end, with zero playback errors. Not yet re-verified
+  against a live, full-pipeline round trip (same Gemini-quota reasoning as
+  the VAD note below) — the mock-based measurement is strong evidence, not
+  a full substitute.
 - **Gemini's free tier has a low daily cap** (20 `generateContent`
   requests/day were hit during development testing on `gemini-3.6-flash`).
   This is a real risk for a live demo with back-to-back judge

@@ -36,6 +36,10 @@ function safeDestroyVad(vad: MicVAD): void {
 // on 3000 (matches main.py's CORS allowlist).
 const WS_URL = "ws://localhost:8000/ws";
 
+// Must match PCM_SAMPLE_RATE in backend/pipeline/tts.py — both sides have
+// to agree on the sample rate for playback to run at the right pitch/speed.
+const TTS_PCM_SAMPLE_RATE = 24000;
+
 interface Turn {
   role: "user" | "assistant";
   text: string;
@@ -54,42 +58,81 @@ export default function Home() {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const audioChunksRef = useRef<ArrayBuffer[]>([]);
-  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  const nextPlayTimeRef = useRef<number>(0);
+  const pcmLeftoverByteRef = useRef<Uint8Array | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
   const vadRef = useRef<MicVAD | null>(null);
 
-  // --- Playback (buffered-then-play: reliable across browsers; the
-  // pipeline already has multi-second STT/LLM latency, so the small delay
-  // of waiting for the full response vs. true progressive MP3 decoding —
-  // which is fragile via MediaSource Extensions — is worth the reliability
-  // for a demo) -----------------------------------------------------
-  const playBufferedAudio = useCallback(async () => {
-    const chunks = audioChunksRef.current;
-    audioChunksRef.current = [];
-    if (chunks.length === 0) return;
-
+  // --- Playback: true progressive streaming, not buffer-then-play -----
+  // Each incoming chunk is raw 16-bit signed little-endian PCM (see
+  // backend/pipeline/tts.py's comment for why raw PCM instead of MP3):
+  // no container framing to worry about, so every chunk can be converted
+  // and scheduled to play the moment it arrives, instead of waiting for
+  // the whole response to finish streaming first. That wait used to add
+  // several seconds of pure latency on top of an already multi-second
+  // STT/LLM pipeline — this removes nearly all of it.
+  //
+  // Chunk boundaries are NOT guaranteed to land on a 2-byte sample
+  // boundary (confirmed empirically: ~2 of 34 chunks in one real test run
+  // had an odd byte count) — pcmLeftoverByteRef carries a dangling byte
+  // from one chunk to be prepended to the next, rather than losing/
+  // misaligning it.
+  //
+  // nextPlayTimeRef tracks a cursor on the AudioContext's own clock so
+  // each new buffer is scheduled to start exactly when the previous one
+  // ends — sample-accurate, gapless — rather than only ever having one
+  // buffer in flight.
+  const playPcmChunk = useCallback((chunk: ArrayBuffer) => {
     const audioContext = (audioContextRef.current ??= new AudioContext());
-    const blob = new Blob(chunks, { type: "audio/mpeg" });
-    const arrayBuffer = await blob.arrayBuffer();
-    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+    let bytes = new Uint8Array(chunk);
+    if (pcmLeftoverByteRef.current) {
+      const combined = new Uint8Array(pcmLeftoverByteRef.current.length + bytes.length);
+      combined.set(pcmLeftoverByteRef.current, 0);
+      combined.set(bytes, pcmLeftoverByteRef.current.length);
+      bytes = combined;
+      pcmLeftoverByteRef.current = null;
+    }
+    if (bytes.length % 2 !== 0) {
+      pcmLeftoverByteRef.current = bytes.slice(bytes.length - 1);
+      bytes = bytes.slice(0, bytes.length - 1);
+    }
+    if (bytes.length === 0) return;
+
+    const sampleCount = bytes.length / 2;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const audioBuffer = audioContext.createBuffer(1, sampleCount, TTS_PCM_SAMPLE_RATE);
+    const channelData = audioBuffer.getChannelData(0);
+    for (let i = 0; i < sampleCount; i++) {
+      const int16 = view.getInt16(i * 2, /* littleEndian */ true);
+      channelData[i] = int16 < 0 ? int16 / 0x8000 : int16 / 0x7fff;
+    }
 
     const source = audioContext.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(audioContext.destination);
     source.onended = () => {
-      if (currentSourceRef.current === source) {
-        currentSourceRef.current = null;
-      }
+      activeSourcesRef.current = activeSourcesRef.current.filter((s) => s !== source);
     };
-    currentSourceRef.current = source;
-    source.start();
+
+    const startAt = Math.max(audioContext.currentTime, nextPlayTimeRef.current);
+    source.start(startAt);
+    nextPlayTimeRef.current = startAt + audioBuffer.duration;
+    activeSourcesRef.current.push(source);
   }, []);
 
   const stopPlayback = useCallback(() => {
-    currentSourceRef.current?.stop();
-    currentSourceRef.current = null;
-    audioChunksRef.current = [];
+    for (const source of activeSourcesRef.current) {
+      try {
+        source.stop();
+      } catch {
+        // already finished naturally — stopping it again is a no-op error, ignore
+      }
+    }
+    activeSourcesRef.current = [];
+    nextPlayTimeRef.current = 0;
+    pcmLeftoverByteRef.current = null;
   }, []);
 
   // --- Mic capture -------------------------------------------------
@@ -240,7 +283,7 @@ export default function Home() {
     socket.onStatusChange(setConnectionStatus);
 
     socket.onAudioReceived((chunk) => {
-      audioChunksRef.current.push(chunk);
+      playPcmChunk(chunk); // play immediately — see playPcmChunk's comment for why
     });
 
     socket.onTranscript((msg: ServerMessage) => {
@@ -259,14 +302,14 @@ export default function Home() {
         setTurns((prev) => [...prev, { role: "user", text: msg.text }]);
       } else if (msg.type === "assistant_text") {
         setTurns((prev) => [...prev, { role: "assistant", text: msg.text, citationPage: msg.citation_page }]);
-      } else if (msg.type === "response_complete") {
-        void playBufferedAudio();
       }
+      // response_complete: nothing to do for playback anymore — chunks
+      // already played progressively as they arrived via playPcmChunk.
     });
 
     socket.connect();
     return () => socket.disconnect();
-  }, [playBufferedAudio]);
+  }, [playPcmChunk]);
 
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
