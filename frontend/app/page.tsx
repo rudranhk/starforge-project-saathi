@@ -80,6 +80,14 @@ export default function Home() {
   // back off and is what really starts the VAD-delay clock — see
   // playPcmChunk's comment for why "speaking" itself is the wrong anchor.
   const awaitingFirstAudioChunkRef = useRef<boolean>(false);
+  // Guards against a real race: sending "interrupt" and calling
+  // stopPlayback() only clears chunks already scheduled at that instant -
+  // any chunks the backend had already sent over the WebSocket a moment
+  // earlier (before it had processed the interrupt) arrive shortly after
+  // and would otherwise get scheduled fresh, making it sound like nothing
+  // was interrupted at all. Set the moment an interrupt is issued, cleared
+  // only when a genuinely new turn starts speaking.
+  const interruptedThisTurnRef = useRef<boolean>(false);
 
   // --- Playback: true progressive streaming, not buffer-then-play -----
   // Each incoming chunk is raw 16-bit signed little-endian PCM (see
@@ -101,6 +109,11 @@ export default function Home() {
   // ends — sample-accurate, gapless — rather than only ever having one
   // buffer in flight.
   const playPcmChunk = useCallback((chunk: ArrayBuffer) => {
+    // Drop anything still arriving from a turn that was already
+    // interrupted - see interruptedThisTurnRef's comment for why this is
+    // needed on top of stopPlayback() alone.
+    if (interruptedThisTurnRef.current) return;
+
     const audioContext = (audioContextRef.current ??= new AudioContext());
 
     let bytes = new Uint8Array(chunk);
@@ -210,6 +223,7 @@ export default function Home() {
   }, []);
 
   const interruptAndListen = useCallback(() => {
+    interruptedThisTurnRef.current = true;
     socketRef.current?.sendControl({ type: "interrupt" });
     stopPlayback();
     void startListening();
@@ -245,6 +259,7 @@ export default function Home() {
     // drove start/pause off it reactively, which paused VAD mid-capture on
     // this very transition — found via the interrupt test never producing
     // a second response. Explicit control only, from here on.)
+    interruptedThisTurnRef.current = true;
     stopPlayback();
     socketRef.current?.sendControl({ type: "interrupt" });
     setMicState("listening");
@@ -346,6 +361,15 @@ export default function Home() {
         if (vadStartTimeoutRef.current !== null) {
           window.clearTimeout(vadStartTimeoutRef.current);
           vadStartTimeoutRef.current = null;
+        }
+        // A genuinely new turn starting to speak means any earlier
+        // interrupt is old news - un-gate playPcmChunk so this turn's
+        // chunks actually play. Unconditional (not behind
+        // VAD_BARGE_IN_ENABLED): the manual click-to-interrupt path sets
+        // this guard too and needs it cleared for the next turn regardless
+        // of whether VAD itself is enabled.
+        if (msg.value === "speaking") {
+          interruptedThisTurnRef.current = false;
         }
         // Explicit, event-driven VAD control (see the comment above this
         // effect block for why not reactive): pause once a turn ends
