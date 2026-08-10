@@ -42,6 +42,15 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws";
 // to agree on the sample rate for playback to run at the right pitch/speed.
 const TTS_PCM_SAMPLE_RATE = 24000;
 
+// Temporary single-flip switch: without headphones, VAD's auto barge-in
+// keeps self-triggering on Saathi's own voice through the speakers (see
+// git history around "speaker echo") — flip this off to record clean,
+// uninterrupted full-response takes, then flip back to true (hot reload
+// picks it up immediately, no other change needed) to record the
+// deliberate mid-sentence interrupt beat. Manual click-to-interrupt (the
+// mic button's own fallback path) is unaffected either way.
+const VAD_BARGE_IN_ENABLED = false;
+
 interface Turn {
   role: "user" | "assistant";
   text: string;
@@ -358,7 +367,7 @@ export default function Home() {
         // Skipping this window costs nothing for a genuine mid-sentence
         // interruption, which is the actual demo moment and happens well
         // after this delay.
-        if (msg.value === "speaking") {
+        if (msg.value === "speaking" && VAD_BARGE_IN_ENABLED) {
           awaitingFirstAudioChunkRef.current = true;
         } else if (msg.value === "idle") {
           vadRef.current?.pause();
