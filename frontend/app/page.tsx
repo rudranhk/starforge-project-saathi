@@ -273,10 +273,22 @@ export default function Home() {
       //   v5 model,     threshold 0.2:                                ~150-190ms (comfortable margin)
       // v5 is a materially better-calibrated model on this content, not
       // just a smaller-frame-size effect — legacy took over 2s to cross
-      // even its own default threshold on the same audio. Landed on v5 +
-      // 0.2 for consistent sub-300ms detection with a safety margin.
+      // even its own default threshold on the same audio.
+      //
+      // 0.2 turned out too sensitive for a real device without
+      // headphones: the mic picks up Saathi's own voice through the
+      // speakers, and browser echo cancellation attenuates but does not
+      // fully eliminate it - confirmed for real, interrupts landing over
+      // a second into playback (well past the separate 500ms grace
+      // period below), i.e. sustained echo clearing 0.2, not just a
+      // brief startup blip. Raised to 0.45 as a robustness margin so
+      // quiet, echo-attenuated audio doesn't clear the bar while genuine
+      // (louder, closer-to-mic) speech still does. Costs some of the
+      // measured latency headroom above, but a demo that reliably hears
+      // real interrupts beats one that's faster but self-triggers.
+      // Headphones remain the fully reliable fix regardless of this.
       model: "v5",
-      positiveSpeechThreshold: 0.2,
+      positiveSpeechThreshold: 0.45,
     }).then((vad) => {
       if (cancelled) {
         safeDestroyVad(vad);
