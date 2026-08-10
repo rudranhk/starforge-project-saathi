@@ -10,13 +10,15 @@
 # interrupt an in-flight call — the sync client has no await points for
 # cancellation to land on, so cancelling would just wait for it to finish.
 
+import asyncio
+import logging
 import os
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BACKEND_DIR / ".env")
@@ -25,6 +27,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL = "gemini-3.6-flash"
 
 _client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+logger = logging.getLogger("saathi")
 
 
 async def transcribe(audio_bytes: bytes, mime_type: str = "audio/webm") -> str:
@@ -42,16 +45,34 @@ async def transcribe(audio_bytes: bytes, mime_type: str = "audio/webm") -> str:
     if _client is None:
         raise RuntimeError("GEMINI_API_KEY must be set in backend/.env")
 
-    response = await _client.aio.models.generate_content(
-        model=MODEL,
-        contents=[
-            types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-            "Transcribe the Hindi speech in this audio exactly as spoken. "
-            "Output only the transcript, in Devanagari script, no commentary.",
-        ],
-        config={"max_output_tokens": 1024},
-    )
-    return response.text
+    # Retries specifically a plain 400 INVALID_ARGUMENT once - observed for
+    # real, repeatedly, on otherwise-valid audio of varying sizes (18KB to
+    # 188KB, no pattern), with every other identical request succeeding.
+    # Looks like an intermittent flake in Gemini's audio ingestion, not a
+    # problem with our request - the SDK's own built-in retry (tenacity,
+    # visible in the traceback) only covers retryable statuses like
+    # 429/503, not a plain 400, so this slips through untouched otherwise.
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            response = await _client.aio.models.generate_content(
+                model=MODEL,
+                contents=[
+                    types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+                    "Transcribe the Hindi speech in this audio exactly as spoken. "
+                    "Output only the transcript, in Devanagari script, no commentary.",
+                ],
+                config={"max_output_tokens": 1024},
+            )
+            return response.text
+        except errors.ClientError as e:
+            last_error = e
+            if getattr(e, "code", None) == 400 and attempt == 0:
+                logger.warning("state: STT got a 400, retrying once")
+                await asyncio.sleep(0.5)
+                continue
+            raise
+    raise last_error  # pragma: no cover - loop always returns or raises above
 
 
 if __name__ == "__main__":
