@@ -7,4 +7,5 @@ pypdf==5.1.0
 tiktoken==0.13.0
 python-dotenv==1.0.1
 requests==2.32.3
+httpx==0.28.1
 pydantic==2.10.4
