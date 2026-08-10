@@ -49,7 +49,7 @@ const TTS_PCM_SAMPLE_RATE = 24000;
 // picks it up immediately, no other change needed) to record the
 // deliberate mid-sentence interrupt beat. Manual click-to-interrupt (the
 // mic button's own fallback path) is unaffected either way.
-const VAD_BARGE_IN_ENABLED = false;
+const VAD_BARGE_IN_ENABLED = true;
 
 interface Turn {
   role: "user" | "assistant";
