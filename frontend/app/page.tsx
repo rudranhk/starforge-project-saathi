@@ -101,6 +101,18 @@ export default function Home() {
   // was interrupted at all. Set the moment an interrupt is issued, cleared
   // only when a genuinely new turn starts speaking.
   const interruptedThisTurnRef = useRef<boolean>(false);
+  // Real race confirmed live: both interrupt paths immediately set
+  // micState to "listening" client-side (optimistic - we already know
+  // we're about to record the follow-up). But the server, right after it
+  // finishes cancelling the old turn, unconditionally sends back
+  // {"state":"idle"} - main.py's interrupt handler always does this,
+  // regardless of what the client does next. The client blindly applying
+  // every server state message overwrote "listening" back to "idle" a
+  // moment later, making the listening ring vanish on its own - and worse,
+  // a second click would then think it should START a new recording
+  // instead of stopping and submitting the one already in progress. This
+  // suppresses exactly that one message.
+  const suppressNextIdleRef = useRef<boolean>(false);
 
   // --- Playback: true progressive streaming, not buffer-then-play -----
   // Each incoming chunk is raw 16-bit signed little-endian PCM (see
@@ -237,6 +249,7 @@ export default function Home() {
 
   const interruptAndListen = useCallback(() => {
     interruptedThisTurnRef.current = true;
+    suppressNextIdleRef.current = true;
     socketRef.current?.sendControl({ type: "interrupt" });
     stopPlayback();
     void startListening();
@@ -273,6 +286,7 @@ export default function Home() {
     // this very transition — found via the interrupt test never producing
     // a second response. Explicit control only, from here on.)
     interruptedThisTurnRef.current = true;
+    suppressNextIdleRef.current = true;
     stopPlayback();
     socketRef.current?.sendControl({ type: "interrupt" });
     setMicState("listening");
@@ -366,6 +380,14 @@ export default function Home() {
 
     socket.onTranscript((msg: ServerMessage) => {
       if (msg.type === "state") {
+        // See suppressNextIdleRef's comment: the server always confirms an
+        // interrupt with state:idle, but both interrupt paths already
+        // moved the client on to "listening" for the follow-up - applying
+        // this specific idle would silently undo that.
+        if (msg.value === "idle" && suppressNextIdleRef.current) {
+          suppressNextIdleRef.current = false;
+          return;
+        }
         setMicState(msg.value);
         // Clear any pending delayed-start below before deciding what to do
         // next — without this, a stale timeout from a previous "speaking"
