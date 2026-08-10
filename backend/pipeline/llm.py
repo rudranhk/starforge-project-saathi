@@ -11,6 +11,10 @@
 #      matching common LLM API convention; "assistant" maps to "model" here)
 #   3. a final user message wrapping the current turn with retrieved policy
 #      chunks inside <policy_context>...</policy_context> tags
+#
+# generate() is async (client.aio, not the sync client) so that
+# asyncio.Task.cancel() in Phase 5's WebSocket handler can actually
+# interrupt an in-flight call — same reasoning as stt.py and retrieval.py.
 
 import os
 import sys
@@ -44,7 +48,7 @@ MAX_OUTPUT_TOKENS = 1024
 _client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 
-def generate(user_turn: str, policy_chunks: list[dict], history: list[dict]) -> str:
+async def generate(user_turn: str, policy_chunks: list[dict], history: list[dict]) -> str:
     """Generate Saathi's next Hindi response.
 
     Args:
@@ -68,7 +72,7 @@ def generate(user_turn: str, policy_chunks: list[dict], history: list[dict]) -> 
     user_message = f"<policy_context>\n{policy_context}\n</policy_context>\n\n{user_turn}"
     contents.append({"role": "user", "parts": [{"text": user_message}]})
 
-    response = _client.models.generate_content(
+    response = await _client.aio.models.generate_content(
         model=MODEL,
         contents=contents,
         config={
@@ -80,24 +84,29 @@ def generate(user_turn: str, policy_chunks: list[dict], history: list[dict]) -> 
 
 
 if __name__ == "__main__":
+    import asyncio
+
     # Windows' console defaults to cp1252, which can't print Devanagari.
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
-    if _client is None:
-        print("ERROR: GEMINI_API_KEY is missing from backend/.env — cannot continue.")
-        sys.exit(1)
+    async def _main() -> None:
+        if _client is None:
+            print("ERROR: GEMINI_API_KEY is missing from backend/.env — cannot continue.")
+            sys.exit(1)
 
-    scenarios = [
-        ("ICU admission", "मेरे पिताजी को अभी ICU में भर्ती किया गया है, मुझे क्या करना चाहिए?"),
-        ("Cashless denial", "अस्पताल कह रहा है कि cashless claim reject हो गया है, अब मैं क्या करूं?"),
-        ("Room rent cap", "अस्पताल ने बहुत महंगा प्राइवेट रूम दिया है, क्या यह policy में cover होगा?"),
-    ]
+        scenarios = [
+            ("ICU admission", "मेरे पिताजी को अभी ICU में भर्ती किया गया है, मुझे क्या करना चाहिए?"),
+            ("Cashless denial", "अस्पताल कह रहा है कि cashless claim reject हो गया है, अब मैं क्या करूं?"),
+            ("Room rent cap", "अस्पताल ने बहुत महंगा प्राइवेट रूम दिया है, क्या यह policy में cover होगा?"),
+        ]
 
-    for label, query in scenarios:
-        print(f"=== Scenario: {label} ===")
-        print(f"User: {query}")
-        chunks = retrieve(query, k=5)
-        response = generate(query, chunks, history=[])
-        print(f"Saathi: {response}")
-        print()
+        for label, query in scenarios:
+            print(f"=== Scenario: {label} ===")
+            print(f"User: {query}")
+            chunks = await retrieve(query, k=5)
+            response = await generate(query, chunks, history=[])
+            print(f"Saathi: {response}")
+            print()
+
+    asyncio.run(_main())

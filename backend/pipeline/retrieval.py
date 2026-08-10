@@ -1,20 +1,19 @@
 # retrieval.py — Policy chunk retrieval from Qdrant
 #
-# Exports retrieve(query, k=5): embeds the query with the same Gemini
-# embedding model used during ingest.py (gemini-embedding-001, free tier),
-# then returns the top-k most similar policy chunks from "saathi_policy".
+# Exports async retrieve(query, k=5): embeds the query with the same
+# Gemini embedding model used during ingest.py, then returns the top-k
+# most similar policy chunks from the "saathi_policy" collection.
 #
-# Note: uses task_type="RETRIEVAL_QUERY" (vs "RETRIEVAL_DOCUMENT" during
-# ingest) — Gemini's embedding model treats queries and documents
-# asymmetrically, and matching the task_type to how each side of the pair
-# is used measurably improves retrieval quality.
+# Async (client.aio + AsyncQdrantClient, not the sync clients) so that
+# asyncio.Task.cancel() in Phase 5's WebSocket handler can actually
+# interrupt an in-flight call.
 
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 from google import genai
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BACKEND_DIR / ".env")
@@ -29,13 +28,13 @@ VECTOR_SIZE = 1536
 
 _gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 _qdrant_client = (
-    QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+    AsyncQdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
     if QDRANT_URL and QDRANT_API_KEY
     else None
 )
 
 
-def retrieve(query: str, k: int = 5) -> list[dict]:
+async def retrieve(query: str, k: int = 5) -> list[dict]:
     """Return the top-k policy chunks most relevant to `query`.
 
     Each result: {"text": str, "page_num": int, "score": float}
@@ -45,14 +44,14 @@ def retrieve(query: str, k: int = 5) -> list[dict]:
             "GEMINI_API_KEY / QDRANT_URL / QDRANT_API_KEY must be set in backend/.env"
         )
 
-    embed_resp = _gemini_client.models.embed_content(
+    embed_resp = await _gemini_client.aio.models.embed_content(
         model=EMBED_MODEL,
         contents=query,
         config={"task_type": "RETRIEVAL_QUERY", "output_dimensionality": VECTOR_SIZE},
     )
     query_vector = embed_resp.embeddings[0].values
 
-    results = _qdrant_client.query_points(
+    results = await _qdrant_client.query_points(
         collection_name=COLLECTION,
         query=query_vector,
         limit=k,

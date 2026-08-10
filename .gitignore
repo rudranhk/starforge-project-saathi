@@ -36,6 +36,7 @@ Thumbs.db
 # --- Project-specific scratch outputs ---
 backend/scratch/*.mp3
 backend/scratch/*.wav
+backend/scratch/*.log
 
 # --- Local-only policy document (kept off the public repo by request) ---
 backend/data/policy.pdf
