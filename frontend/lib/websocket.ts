@@ -6,7 +6,12 @@ export type ServerMessage =
   | { type: "state"; value: "thinking" | "speaking" | "idle" }
   | { type: "user_transcript"; text: string }
   | { type: "assistant_text"; text: string; citation_page: number | null }
-  | { type: "response_complete" };
+  | { type: "response_complete" }
+  // Sent when the pipeline fails anywhere (STT/retrieval/generation/TTS —
+  // e.g. Gemini's free-tier daily quota running out, a real failure mode
+  // hit during development, not hypothetical). Always followed by a
+  // state:"idle" message, so the mic button un-sticks either way.
+  | { type: "error"; message: string };
 
 export type ControlMessage =
   // mime_type defaults to "audio/webm" server-side (the manual push-to-talk

@@ -147,7 +147,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             logger.info("state: pipeline cancelled (interrupt)")
             raise
         except Exception:
+            # Without this, a failure anywhere in the pipeline (STT/retrieval
+            # /generation/TTS - e.g. Gemini's free-tier daily quota being
+            # exhausted, a real, confirmed failure mode, not hypothetical)
+            # left the client stuck showing "thinking" forever with zero
+            # feedback: the exception was only ever logged server-side.
             logger.exception("state: pipeline error")
+            await send_text_shielded(
+                {"type": "error", "message": "कुछ गड़बड़ हो गई। कृपया थोड़ी देर बाद फिर कोशिश करें।"}
+            )
+            await send_text_shielded({"type": "state", "value": "idle"})
 
     try:
         while True:

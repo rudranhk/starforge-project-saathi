@@ -304,6 +304,12 @@ export default function Home() {
         setTurns((prev) => [...prev, { role: "user", text: msg.text }]);
       } else if (msg.type === "assistant_text") {
         setTurns((prev) => [...prev, { role: "assistant", text: msg.text, citationPage: msg.citation_page }]);
+      } else if (msg.type === "error") {
+        // Backend pipeline failed (e.g. Gemini quota exhausted) — without
+        // this the UI would just sit on "thinking" forever with no
+        // indication anything went wrong (the failure mode this exists to
+        // fix). Reuses the same banner as the mic-permission error.
+        setMicError(msg.message);
       }
       // response_complete: nothing to do for playback anymore — chunks
       // already played progressively as they arrived via playPcmChunk.
