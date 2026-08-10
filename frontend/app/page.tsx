@@ -65,6 +65,7 @@ export default function Home() {
   const pcmLeftoverByteRef = useRef<Uint8Array | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
   const vadRef = useRef<MicVAD | null>(null);
+  const vadStartTimeoutRef = useRef<number | null>(null);
 
   // --- Playback: true progressive streaming, not buffer-then-play -----
   // Each incoming chunk is raw 16-bit signed little-endian PCM (see
@@ -291,12 +292,33 @@ export default function Home() {
     socket.onTranscript((msg: ServerMessage) => {
       if (msg.type === "state") {
         setMicState(msg.value);
+        // Clear any pending delayed-start below before deciding what to do
+        // next — without this, a stale timeout from a previous "speaking"
+        // state could fire vad.start() at a totally wrong moment (e.g.
+        // after the turn already ended).
+        if (vadStartTimeoutRef.current !== null) {
+          window.clearTimeout(vadStartTimeoutRef.current);
+          vadStartTimeoutRef.current = null;
+        }
         // Explicit, event-driven VAD control (see the comment above this
-        // effect block for why not reactive): start the instant Saathi
-        // begins speaking, pause once a turn ends without interruption
-        // (the interrupted path already pauses in handleBargeInEnd).
+        // effect block for why not reactive): pause once a turn ends
+        // without interruption (the interrupted path already pauses in
+        // handleBargeInEnd).
+        //
+        // Starting is deliberately delayed ~500ms rather than instant: with
+        // no headphones, the mic picks up Saathi's own voice from the
+        // speakers, and the browser's echo cancellation needs a moment to
+        // adapt to a newly-started audio stream — starting VAD exactly when
+        // she starts talking means it can catch that adaptation gap and
+        // fire a false "user interrupted" the instant she begins (observed
+        // for real: interrupts landing 300-1000ms into playback, killing
+        // the response before anything was audible). Skipping this window
+        // costs nothing for a genuine mid-sentence interruption, which is
+        // the actual demo moment and happens well after this delay.
         if (msg.value === "speaking") {
-          vadRef.current?.start();
+          vadStartTimeoutRef.current = window.setTimeout(() => {
+            vadRef.current?.start();
+          }, 500);
         } else if (msg.value === "idle") {
           vadRef.current?.pause();
         }
