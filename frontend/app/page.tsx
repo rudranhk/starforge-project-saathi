@@ -194,6 +194,17 @@ export default function Home() {
       // only while Saathi is speaking (see the micState effect below), so
       // opt out and let that effect be the only thing calling start().
       startOnLoad: false,
+      // Interrupt-latency tuning, measured with a standalone harness
+      // against real fake-mic audio (4 runs each, no backend involved):
+      //   legacy model, default threshold 0.3 (the library default): ~2.2-2.5s
+      //   v5 model,     threshold 0.3:                                ~290-350ms (borderline)
+      //   v5 model,     threshold 0.2:                                ~150-190ms (comfortable margin)
+      // v5 is a materially better-calibrated model on this content, not
+      // just a smaller-frame-size effect — legacy took over 2s to cross
+      // even its own default threshold on the same audio. Landed on v5 +
+      // 0.2 for consistent sub-300ms detection with a safety margin.
+      model: "v5",
+      positiveSpeechThreshold: 0.2,
     }).then((vad) => {
       if (cancelled) {
         safeDestroyVad(vad);

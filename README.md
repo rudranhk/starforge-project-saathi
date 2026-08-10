@@ -160,14 +160,17 @@ Being direct about these rather than letting a judge discover them mid-demo:
   accents or code-switching the way a dedicated Hindi/Hinglish STT model
   would be — Groq whisper-large-v3 (the original plan) was never
   benchmarked against it since Groq's signup never resolved.
-- **Interrupt latency measured at ~450–700ms, not strictly under the
-  300ms target.** This is with the barge-in VAD's default (untuned)
-  sensitivity settings — `positiveSpeechThreshold`/`redemptionMs` were
-  never tuned for this specific microphone/room-noise setup due to time
-  constraints. The interruption itself is real and does cancel in-flight
-  generation (verified via a direct cancellation test — see
-  `backend/pipeline/llm.py` usage in testing), it's just not
-  sub-300ms yet.
+- **Interrupt detection tuned to ~150–190ms** (measured with a standalone
+  harness against real fake-mic audio, 4 consistent runs, no backend
+  involved) — under the 300ms target. Two levers got it there: switching
+  VAD's model from the library default `"legacy"` to `"v5"` (a materially
+  better-calibrated model on this content — legacy took over 2 seconds to
+  cross even its own default threshold on the same audio), plus lowering
+  `positiveSpeechThreshold` from 0.3 to 0.2. Not yet re-verified inside the
+  full app with a live pipeline round-trip (Gemini's daily quota was
+  intentionally left unspent for the demo recording rather than burned on
+  a repeat test) — the isolated measurement is strong evidence, not a full
+  substitute for an in-app confirmation.
 - **Audio playback is buffered, not truly progressive.** The frontend
   waits for a complete response to finish streaming before decoding and
   playing it (`decodeAudioData` needs complete audio data to be reliable
