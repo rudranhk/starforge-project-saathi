@@ -66,6 +66,11 @@ export default function Home() {
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
   const vadRef = useRef<MicVAD | null>(null);
   const vadStartTimeoutRef = useRef<number | null>(null);
+  // Set true the moment a turn enters "speaking" (before any audio has
+  // arrived yet); the first chunk playPcmChunk actually schedules flips it
+  // back off and is what really starts the VAD-delay clock — see
+  // playPcmChunk's comment for why "speaking" itself is the wrong anchor.
+  const awaitingFirstAudioChunkRef = useRef<boolean>(false);
 
   // --- Playback: true progressive streaming, not buffer-then-play -----
   // Each incoming chunk is raw 16-bit signed little-endian PCM (see
@@ -119,6 +124,22 @@ export default function Home() {
       activeSourcesRef.current = activeSourcesRef.current.filter((s) => s !== source);
     };
 
+    // This is the actual moment sound is about to come out of the
+    // speakers for this turn — the right anchor for the VAD-delay grace
+    // period (see the useEffect below for why). Anchoring to the
+    // "speaking" state message instead (an earlier version of this fix)
+    // was wrong: TTS generation + network time before the first chunk
+    // arrives varies a lot (observed 1-3+ seconds), so a fixed delay from
+    // that message could fully expire before any audio had even started -
+    // giving zero protection right when it's needed.
+    if (awaitingFirstAudioChunkRef.current) {
+      awaitingFirstAudioChunkRef.current = false;
+      vadStartTimeoutRef.current = window.setTimeout(() => {
+        vadRef.current?.start();
+        vadStartTimeoutRef.current = null;
+      }, 500);
+    }
+
     const startAt = Math.max(audioContext.currentTime, nextPlayTimeRef.current);
     source.start(startAt);
     nextPlayTimeRef.current = startAt + audioBuffer.duration;
@@ -136,6 +157,11 @@ export default function Home() {
     activeSourcesRef.current = [];
     nextPlayTimeRef.current = 0;
     pcmLeftoverByteRef.current = null;
+    awaitingFirstAudioChunkRef.current = false;
+    if (vadStartTimeoutRef.current !== null) {
+      window.clearTimeout(vadStartTimeoutRef.current);
+      vadStartTimeoutRef.current = null;
+    }
   }, []);
 
   // --- Mic capture -------------------------------------------------
@@ -305,20 +331,23 @@ export default function Home() {
         // without interruption (the interrupted path already pauses in
         // handleBargeInEnd).
         //
-        // Starting is deliberately delayed ~500ms rather than instant: with
-        // no headphones, the mic picks up Saathi's own voice from the
+        // Starting is deliberately delayed ~500ms after audio actually
+        // begins playing (armed here, actually scheduled in playPcmChunk
+        // once the first real chunk arrives — see its comment for why
+        // "speaking" itself, which fires well before any audio has
+        // streamed in, is the wrong anchor for that delay): with no
+        // headphones, the mic picks up Saathi's own voice from the
         // speakers, and the browser's echo cancellation needs a moment to
-        // adapt to a newly-started audio stream — starting VAD exactly when
-        // she starts talking means it can catch that adaptation gap and
-        // fire a false "user interrupted" the instant she begins (observed
-        // for real: interrupts landing 300-1000ms into playback, killing
-        // the response before anything was audible). Skipping this window
-        // costs nothing for a genuine mid-sentence interruption, which is
-        // the actual demo moment and happens well after this delay.
+        // adapt to a newly-started audio stream — starting VAD exactly
+        // when she starts talking means it can catch that adaptation gap
+        // and fire a false "user interrupted" right as she begins
+        // (observed for real: interrupts landing under a second into
+        // playback, killing the response before anything was audible).
+        // Skipping this window costs nothing for a genuine mid-sentence
+        // interruption, which is the actual demo moment and happens well
+        // after this delay.
         if (msg.value === "speaking") {
-          vadStartTimeoutRef.current = window.setTimeout(() => {
-            vadRef.current?.start();
-          }, 500);
+          awaitingFirstAudioChunkRef.current = true;
         } else if (msg.value === "idle") {
           vadRef.current?.pause();
         }
